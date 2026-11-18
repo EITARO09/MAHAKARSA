@@ -66,6 +66,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Daftar Akun</title>
+    <!-- Load Face-API.js dari CDN -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
     <style>
         * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
         body { background: #f1f5f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 1rem; }
@@ -78,7 +80,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         input:focus { outline: none; border-color: #2563eb; }
 
-        /* Bar khusus untuk tombol foto agar seragam dengan input lain */
         .photo-bar {
             display: flex;
             align-items: center;
@@ -118,8 +119,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .btn-cam { background: #0f172a; color: #fff; }
         .btn-cam:hover { background: #1e293b; }
         .btn-capture { background: #16a34a; color: #fff; }
-        .btn-file { background: #e2e8f0; color: #334155; }
-        .btn-file:hover { background: #cbd5e1; }
 
         .media-box {
             margin-top: 0.6rem;
@@ -166,21 +165,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <input type="password" name="password" required placeholder="Minimal 6 karakter">
         </div>
 
-        <!-- Bar Tambahan untuk Foto Langsung Jadi PNG -->
         <div class="form-group">
             <label>Foto Profil (.PNG)</label>
             <div class="photo-bar">
-                <span id="photoStatus" class="photo-status">Belum ada foto</span>
+                <span id="photoStatus" class="photo-status">Memuat model AI...</span>
                 <div class="photo-actions">
-                    <button type="button" id="btnCam" class="btn-mini btn-cam">Ambil Foto</button>
+                    <button type="button" id="btnCam" class="btn-mini btn-cam" disabled>Ambil Foto</button>
                 </div>
             </div>
 
-            <!-- Input file tersembunyi & input Base64 PNG -->
-            <input type="file" id="fileInput" accept="image/*" style="display: none;">
+            <!-- Input Base64 PNG -->
             <input type="hidden" name="foto_png" id="fotoPng">
 
-            <!-- Area Pratinjau Kamera / Hasil PNG -->
+            <!-- Area Pratinjau Kamera -->
             <div id="mediaBox" class="media-box">
                 <video id="videoPreview" autoplay muted playsinline style="display: none;"></video>
                 <img id="imgPreview" alt="Preview PNG" style="display: none;">
@@ -196,8 +193,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <script>
 const btnCam       = document.getElementById('btnCam');
-const btnFile      = document.getElementById('btnFile');
-const fileInput    = document.getElementById('fileInput');
 const fotoPngInput = document.getElementById('fotoPng');
 const photoStatus  = document.getElementById('photoStatus');
 const mediaBox     = document.getElementById('mediaBox');
@@ -207,6 +202,24 @@ const canvas       = document.getElementById('convertCanvas');
 
 let activeStream = null;
 let isCameraOpen = false;
+let isModelLoaded = false;
+
+// Load Model Face-API.js saat halaman dibuka
+window.addEventListener('DOMContentLoaded', async () => {
+    try {
+        photoStatus.textContent = 'Memuat model AI wajah...';
+        // Menggunakan model TinyFaceDetector dari CDN resmi vladmandic
+        await faceapi.nets.tinyFaceDetector.loadFromUri('https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model');
+        
+        isModelLoaded = true;
+        photoStatus.textContent = 'Belum ada foto';
+        btnCam.removeAttribute('disabled');
+    } catch (err) {
+        photoStatus.textContent = 'Gagal memuat model AI';
+        console.error(err);
+        alert('Gagal memuat model Face-API: ' + err.message);
+    }
+});
 
 function stopCamera() {
     if (activeStream) {
@@ -229,8 +242,13 @@ function setResultPng(dataUrlPng) {
     photoStatus.classList.add('ready');
 }
 
-// 1. Ambil foto langsung dari kamera -> konversi ke PNG
+// Tombol Ambil Foto & Validasi Wajah
 btnCam.addEventListener('click', async () => {
+    if (!isModelLoaded) {
+        alert('Model AI sedang dimuat, mohon tunggu sebentar.');
+        return;
+    }
+
     if (!isCameraOpen) {
         try {
             activeStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -240,16 +258,24 @@ btnCam.addEventListener('click', async () => {
             mediaBox.style.display = 'block';
 
             isCameraOpen = true;
-            btnCam.textContent = 'Jepret PNG';
+            btnCam.textContent = 'Jepret & Validasi';
             btnCam.classList.remove('btn-cam');
             btnCam.classList.add('btn-capture');
-            photoStatus.textContent = 'Kamera aktif...';
+            photoStatus.textContent = 'Kamera aktif. Posisikan wajah...';
             photoStatus.classList.remove('ready');
         } catch (err) {
             alert('Tidak dapat mengakses kamera: ' + err.message);
         }
     } else {
-        // Tangkap frame video saat ini dan jadikan PNG
+        // DETEKSI APAKAH ADA WAJAH SEBELUM MENGEKSPOR GAMBAR
+        const detection = await faceapi.detectSingleFace(videoPreview, new faceapi.TinyFaceDetectorOptions());
+
+        if (!detection) {
+            alert("Wajah tidak terdeteksi! Pastikan wajah Anda menghadap kamera dengan jelas.");
+            return; // Batalkan proses jepret jika tidak ada wajah
+        }
+
+        // Jika terdeteksi wajah, lanjutkan tangkap gambar ke canvas
         canvas.width = videoPreview.videoWidth || 640;
         canvas.height = videoPreview.videoHeight || 480;
         const ctx = canvas.getContext('2d');
@@ -259,33 +285,6 @@ btnCam.addEventListener('click', async () => {
         stopCamera();
         setResultPng(pngDataUrl);
     }
-});
-
-// 2. Pilih file gambar (JPG/WEBP/PNG) -> otomatis konversi ke PNG
-btnFile.addEventListener('click', () => {
-    stopCamera();
-    fileInput.click();
-});
-
-fileInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-
-            const pngDataUrl = canvas.toDataURL('image/png');
-            setResultPng(pngDataUrl);
-        };
-        img.src = event.target.result;
-    };
-    reader.readAsDataURL(file);
 });
 </script>
 </body>
